@@ -1,0 +1,128 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*.*'        # triggers on v1.0, v1.2.3, etc.
+
+jobs:
+  build-and-release:
+    name: Build macOS DMG
+    runs-on: macos-26   # macOS 26 Tahoe runner — required for .glassEffect() and other macOS 26 APIs
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ── 2. Select Xcode (latest available on the runner) ─────────────────────
+      - name: Select Xcode
+        run: |
+          XCODE=$(ls /Applications | grep "^Xcode" | sort -V | tail -1)
+          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+          echo "Using: $XCODE"
+          xcodebuild -version
+
+      # ── 3. Resolve version from tag ──────────────────────────────────────────
+      - name: Extract version from tag
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # e.g. v1.0
+          VERSION="${TAG#v}"                # strip leading 'v' → 1.0
+          echo "tag=$TAG"       >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      # ── 4. Bump CFBundleShortVersionString in Info.plist ─────────────────────
+      #    The Xcode project keeps version info in project.pbxproj, but we also
+      #    inject it via the build setting MARKETING_VERSION so the bundle reads
+      #    the correct value at runtime.
+      - name: Set bundle version
+        run: |
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleShortVersionString ${{ steps.version.outputs.version }}" \
+            QuestSyndicate/Info.plist 2>/dev/null || \
+          /usr/libexec/PlistBuddy \
+            -c "Add :CFBundleShortVersionString string ${{ steps.version.outputs.version }}" \
+            QuestSyndicate/Info.plist
+
+          # Build number = number of git commits (always incrementing)
+          BUILD=$(git rev-list --count HEAD)
+          /usr/libexec/PlistBuddy \
+            -c "Set :CFBundleVersion $BUILD" \
+            QuestSyndicate/Info.plist 2>/dev/null || \
+          /usr/libexec/PlistBuddy \
+            -c "Add :CFBundleVersion string $BUILD" \
+            QuestSyndicate/Info.plist
+
+      # ── 5. Archive ───────────────────────────────────────────────────────────
+      - name: Archive (xcodebuild)
+        run: |
+          xcodebuild archive \
+            -project QuestSyndicate.xcodeproj \
+            -scheme QuestSyndicate \
+            -configuration Release \
+            -archivePath "${{ runner.temp }}/QuestSyndicate.xcarchive" \
+            MARKETING_VERSION="${{ steps.version.outputs.version }}" \
+            CODE_SIGN_IDENTITY="-" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=YES \
+            -allowProvisioningUpdates \
+            | xcpretty || true
+
+      # ── 6. Export .app from archive ──────────────────────────────────────────
+      - name: Export .app
+        run: |
+          APP_PATH=$(find "${{ runner.temp }}/QuestSyndicate.xcarchive/Products" \
+            -name "*.app" -maxdepth 3 | head -1)
+
+          if [ -z "$APP_PATH" ]; then
+            echo "❌ .app not found in archive. Listing archive contents:"
+            find "${{ runner.temp }}/QuestSyndicate.xcarchive" -type f | head -40
+            exit 1
+          fi
+
+          echo "✅ Found app: $APP_PATH"
+          cp -R "$APP_PATH" "${{ runner.temp }}/QuestSyndicate.app"
+
+      # ── 7. Ad-hoc code-sign the .app ─────────────────────────────────────────
+      - name: Ad-hoc sign
+        run: |
+          codesign --force --deep --sign - \
+            "${{ runner.temp }}/QuestSyndicate.app"
+
+      # ── 8. Create DMG ────────────────────────────────────────────────────────
+      - name: Create DMG
+        run: |
+          DMG_NAME="QuestSyndicate-${{ steps.version.outputs.tag }}.dmg"
+          DMG_PATH="${{ runner.temp }}/$DMG_NAME"
+          STAGING="${{ runner.temp }}/dmg-staging"
+
+          mkdir -p "$STAGING"
+          cp -R "${{ runner.temp }}/QuestSyndicate.app" "$STAGING/"
+
+          # Symlink to /Applications for drag-install UX
+          ln -s /Applications "$STAGING/Applications"
+
+          hdiutil create \
+            -volname "QuestSyndicate ${{ steps.version.outputs.version }}" \
+            -srcfolder "$STAGING" \
+            -ov \
+            -format UDZO \
+            "$DMG_PATH"
+
+          echo "dmg_path=$DMG_PATH"  >> $GITHUB_ENV
+          echo "dmg_name=$DMG_NAME"  >> $GITHUB_ENV
+
+      # ── 9. Create GitHub Release & upload DMG ────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "QuestSyndicate ${{ steps.version.outputs.tag }}"
+          draft: false
+          prerelease: false
+          generate_release_notes: true    # auto-generates changelog from commits
+          files: ${{ env.dmg_path }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
