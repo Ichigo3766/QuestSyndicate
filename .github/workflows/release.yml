@@ -9,6 +9,8 @@ jobs:
   build-and-release:
     name: Build macOS DMG
     runs-on: macos-26   # macOS 26 Tahoe runner — required for .glassEffect() and other macOS 26 APIs
+    permissions:
+      contents: write   # required for softprops/action-gh-release to create releases
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────────────────────
