@@ -1,5 +1,26 @@
 # Changelog
 
+## 📦 NEXT BUILD
+
+### What's New
+
+### Improvements
+
+### Bug Fixes
+
+
+## Previous Builds
+
+## v1.1.2 — April 21, 2026
+
+### What's New
+
+### Improvements
+- Test release to verify auto-updater end-to-end.
+
+### Bug Fixes
+
+
 ## v1.1.1 — April 21, 2026
 
 ### What's New
@@ -11,8 +32,6 @@
 - Fixed update install getting stuck on "Installing..." indefinitely after downloading.
 - Fixed release notes showing a GitHub compare link instead of the actual changelog in the update prompt.
 
-
-## Previous Builds
 
 ## v1.1 — April 21, 2026
 
