@@ -1,6 +1,6 @@
 # Changelog
 
-## 📦 NEXT BUILD
+## v1.1.1 — April 21, 2026
 
 ### What's New
 
