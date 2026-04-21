@@ -830,6 +830,7 @@ final class AppState {
 enum AppTab: String, CaseIterable, Identifiable {
     case library   = "Library"
     case downloads = "Downloads"
+    case saves     = "Saves"
     case terminal  = "Terminal"
 
     var id: String { rawValue }
@@ -838,6 +839,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .library:   return "square.grid.2x2"
         case .downloads: return "arrow.down.circle"
+        case .saves:     return "externaldrive.badge.timemachine"
         case .terminal:  return "terminal"
         }
     }
@@ -846,6 +848,7 @@ enum AppTab: String, CaseIterable, Identifiable {
         switch self {
         case .library:   return "Browse & install games"
         case .downloads: return "Manage active downloads"
+        case .saves:     return "Backup & restore game saves"
         case .terminal:  return "ADB shell & commands"
         }
     }

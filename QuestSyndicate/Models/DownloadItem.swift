@@ -10,43 +10,48 @@ import SwiftUI
 // MARK: - DownloadStatus
 
 enum DownloadStatus: String, Codable, Hashable, CaseIterable {
-    case queued       = "Queued"
-    case downloading  = "Downloading"
-    case paused       = "Paused"
-    case extracting   = "Extracting"
-    case installing   = "Installing"
-    case completed    = "Completed"
-    case error        = "Error"
-    case cancelled    = "Cancelled"
-    case installError = "InstallError"
+    case queued              = "Queued"
+    case downloading         = "Downloading"
+    case paused              = "Paused"
+    case extracting          = "Extracting"
+    case installing          = "Installing"
+    case completed           = "Completed"
+    case error               = "Error"
+    case cancelled           = "Cancelled"
+    case installError        = "InstallError"
+    /// Waiting for user confirmation before doing a full uninstall+reinstall
+    /// to resolve a signing-key mismatch. Save data will be backed up first.
+    case signatureMismatch   = "SignatureMismatch"
 
     var displayName: String { rawValue }
 
     var systemImage: String {
         switch self {
-        case .queued:      return "clock"
-        case .downloading: return "arrow.down.circle"
-        case .paused:      return "pause.circle"
-        case .extracting:  return "archivebox"
-        case .installing:  return "square.and.arrow.down"
-        case .completed:   return "checkmark.circle.fill"
-        case .error:       return "exclamationmark.circle.fill"
-        case .cancelled:   return "xmark.circle"
-        case .installError: return "exclamationmark.triangle.fill"
+        case .queued:            return "clock"
+        case .downloading:       return "arrow.down.circle"
+        case .paused:            return "pause.circle"
+        case .extracting:        return "archivebox"
+        case .installing:        return "square.and.arrow.down"
+        case .completed:         return "checkmark.circle.fill"
+        case .error:             return "exclamationmark.circle.fill"
+        case .cancelled:         return "xmark.circle"
+        case .installError:      return "exclamationmark.triangle.fill"
+        case .signatureMismatch: return "exclamationmark.shield.fill"
         }
     }
 
     var color: Color {
         switch self {
-        case .queued:       return .secondary
-        case .downloading:  return .blue
-        case .paused:       return .orange
-        case .extracting:   return .purple
-        case .installing:   return .indigo
-        case .completed:    return .green
-        case .error:        return .red
-        case .cancelled:    return .secondary
-        case .installError: return .red
+        case .queued:            return .secondary
+        case .downloading:       return .blue
+        case .paused:            return .orange
+        case .extracting:        return .purple
+        case .installing:        return .indigo
+        case .completed:         return .green
+        case .error:             return .red
+        case .cancelled:         return .secondary
+        case .installError:      return .red
+        case .signatureMismatch: return .orange
         }
     }
 
@@ -61,7 +66,7 @@ enum DownloadStatus: String, Codable, Hashable, CaseIterable {
     var canResume: Bool { self == .paused }
     var canCancel: Bool { isActive || self == .queued || self == .paused }
     var canRetry: Bool { self == .error || self == .cancelled || self == .installError }
-    var canDelete: Bool { self == .completed || self == .error || self == .cancelled || self == .installError }
+    var canDelete: Bool { self == .completed || self == .error || self == .cancelled || self == .installError || self == .signatureMismatch }
 }
 
 // MARK: - DownloadItem
@@ -87,6 +92,9 @@ struct DownloadItem: Identifiable, Hashable, Codable {
     var size: String?
     /// True once the item has been successfully installed to a device via adb.
     var isInstalledToDevice: Bool = false
+    /// The local path to the APK that triggered a signature mismatch.
+    /// Set when status transitions to .signatureMismatch so confirmReinstall() can pick it up.
+    var pendingApkPath: String?
 
     // MARK: Computed
 

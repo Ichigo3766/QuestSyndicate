@@ -3,6 +3,7 @@ import SwiftUI
 struct DownloadItemRow: View {
     @Environment(AppState.self) private var appState
     let item: DownloadItem
+    @State private var showReinstallAlert = false
 
     var body: some View {
         HStack(spacing: 12) {
@@ -66,7 +67,10 @@ struct DownloadItemRow: View {
                 } else {
                     Text(item.statusDescription)
                         .font(.caption)
-                        .foregroundStyle(item.status == .error || item.status == .installError ? .red : .secondary)
+                        .foregroundStyle(
+                            item.status == .error || item.status == .installError ? .red :
+                            item.status == .signatureMismatch ? .orange : .secondary
+                        )
                         .fixedSize(horizontal: false, vertical: true)
                         .transition(.opacity.combined(with: .move(edge: .bottom)))
                 }
@@ -81,6 +85,30 @@ struct DownloadItemRow: View {
     @ViewBuilder
     private var actionButtons: some View {
         HStack(spacing: 6) {
+            if item.status == .signatureMismatch {
+                Button { showReinstallAlert = true } label: {
+                    Image(systemName: "exclamationmark.shield.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+                .help("Reinstall (signature mismatch)")
+                .alert("Signature Mismatch", isPresented: $showReinstallAlert) {
+                    Button("Cancel", role: .cancel) {}
+                    Button("Reinstall", role: .destructive) {
+                        Task {
+                            guard let device = appState.selectedDevice else { return }
+                            await appState.pipeline.confirmReinstall(
+                                releaseName: item.releaseName,
+                                deviceSerial: device.id
+                            )
+                        }
+                    }
+                } message: {
+                    Text("This game was signed with a different key and must be fully reinstalled to update.\n\nYour save data will be backed up automatically and restored after installation.")
+                }
+            }
+
             if item.status.canPause {
                 Button { appState.pipeline.pauseDownload(releaseName: item.releaseName) } label: {
                     Image(systemName: "pause.circle").font(.system(size: 18)).foregroundStyle(.secondary)

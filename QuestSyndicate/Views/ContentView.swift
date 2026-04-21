@@ -68,6 +68,9 @@ struct ContentView: View {
             GameTableView()
         case .downloads:
             DownloadListView()
+        case .saves:
+            SavesView()
+                .environment(appState)
         case .terminal:
             ADBTerminalView()
                 .environment(appState)

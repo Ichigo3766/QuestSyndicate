@@ -16,14 +16,16 @@ enum ADBError: Error, LocalizedError {
     case installFailed(String)
     case commandFailed(String)
     case exportFailed(String)
+    case signatureMismatch(packageName: String)
 
     var errorDescription: String? {
         switch self {
-        case .notInitialized:          return "ADB service not initialized"
-        case .deviceNotFound(let s):   return "Device not found: \(s)"
-        case .installFailed(let msg):  return "Install failed: \(msg)"
-        case .commandFailed(let msg):  return "ADB command failed: \(msg)"
-        case .exportFailed(let msg):   return "Export failed: \(msg)"
+        case .notInitialized:               return "ADB service not initialized"
+        case .deviceNotFound(let s):        return "Device not found: \(s)"
+        case .installFailed(let msg):       return "Install failed: \(msg)"
+        case .commandFailed(let msg):       return "ADB command failed: \(msg)"
+        case .exportFailed(let msg):        return "Export failed: \(msg)"
+        case .signatureMismatch(let pkg):   return "Signature mismatch for \(pkg)"
         }
     }
 }
@@ -582,95 +584,132 @@ actor ADBService {
         if combinedOutput.contains("Success") { return true }
 
         // Handle INSTALL_FAILED_UPDATE_INCOMPATIBLE — signature mismatch between installed and
-        // new APK (different keystore). We MUST uninstall first, but we preserve game data by:
-        //   1. Pulling /sdcard/Android/data/<pkg> and /sdcard/Android/obb/<pkg> to a temp dir
-        //   2. Uninstalling (APK only — not deleting sdcard data)
-        //   3. Installing the new APK
-        //   4. Pushing the backed-up data/obb back
-        //   5. Cleaning up the temp dir
+        // new APK. Pause and surface to the user so they can confirm before we wipe the app.
         // The error text is: "Existing package <pkg> signatures do not match"
         if combinedOutput.contains("INSTALL_FAILED_UPDATE_INCOMPATIBLE"),
            let pkgMatch = combinedOutput.range(of: #"(?i)package\s+(\S+)\s+signatures"#, options: .regularExpression) {
-            // Extract the package name from between "package " and " signatures"
             let fullMatch = String(combinedOutput[pkgMatch])
             let parts = fullMatch.components(separatedBy: .whitespaces).filter { !$0.isEmpty }
             let pkg = parts.count >= 2 ? parts[1] : fullMatch
-
-            // Temp backup directory on the Mac
-            let backupDir = FileManager.default.temporaryDirectory
-                .appendingPathComponent("QuestSyndicate_backup_\(pkg)_\(Int(Date().timeIntervalSince1970))")
-            let backupDataDir = backupDir.appendingPathComponent("data")
-            let backupObbDir  = backupDir.appendingPathComponent("obb")
-            try? FileManager.default.createDirectory(at: backupDir, withIntermediateDirectories: true)
-
-            // 1. Backup /sdcard/Android/data/<pkg> if it exists
-            let hasData = await shellSilent(serial, "[ -d /sdcard/Android/data/\(pkg) ] && echo yes") == "yes"
-            if hasData {
-                try? FileManager.default.createDirectory(at: backupDataDir, withIntermediateDirectories: true)
-                _ = try? await runner.run(adbPath, arguments: ["-s", serial, "pull",
-                    "/sdcard/Android/data/\(pkg)", backupDataDir.path])
-            }
-
-            // 2. Backup /sdcard/Android/obb/<pkg> if it exists
-            let hasObb = await shellSilent(serial, "[ -d /sdcard/Android/obb/\(pkg) ] && echo yes") == "yes"
-            if hasObb {
-                try? FileManager.default.createDirectory(at: backupObbDir, withIntermediateDirectories: true)
-                _ = try? await runner.run(adbPath, arguments: ["-s", serial, "pull",
-                    "/sdcard/Android/obb/\(pkg)", backupObbDir.path])
-            }
-
-            // 3. Uninstall APK only (do NOT remove sdcard data — we already have a backup,
-            //    and removing it now is redundant since we'll overwrite it after reinstall)
-            _ = try? await shell(serial, "pm uninstall \(pkg)")
-
-            // 4. Install the new APK
-            let retryHandle = runner.runStreaming(adbPath, arguments: args) { line in
-                if let onProgress {
-                    let pattern = #"\[(\d{1,3})%\]"#
-                    if let range = line.range(of: pattern, options: .regularExpression) {
-                        let token = String(line[range])
-                        let digits = token.filter { $0.isNumber }
-                        if let pct = Double(digits) { onProgress(min(pct, 100)) }
-                    }
-                }
-            }
-            let retryOutput: String
-            do {
-                let retryResult = try await retryHandle.waitForCompletion()
-                retryOutput = (retryResult.stdout + retryResult.stderr).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            } catch {
-                if let pe = error as? ProcessError,
-                   case ProcessError.processTerminated(_, let stderr) = pe {
-                    retryOutput = stderr.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-                } else {
-                    retryOutput = error.localizedDescription
-                }
-            }
-
-            // 5. Restore backed-up data (regardless of install success — don't leave user without saves)
-            if hasData {
-                let pulledDataDir = backupDataDir.appendingPathComponent(pkg)
-                let srcPath = FileManager.default.fileExists(atPath: pulledDataDir.path)
-                    ? pulledDataDir.path : backupDataDir.path
-                _ = try? await runner.run(adbPath, arguments: ["-s", serial, "push",
-                    srcPath, "/sdcard/Android/data/\(pkg)"])
-            }
-            if hasObb {
-                let pulledObbDir = backupObbDir.appendingPathComponent(pkg)
-                let srcPath = FileManager.default.fileExists(atPath: pulledObbDir.path)
-                    ? pulledObbDir.path : backupObbDir.path
-                _ = try? await runner.run(adbPath, arguments: ["-s", serial, "push",
-                    srcPath, "/sdcard/Android/obb/\(pkg)"])
-            }
-
-            // 6. Clean up temp backup
-            try? FileManager.default.removeItem(at: backupDir)
-
-            if retryOutput.contains("Success") { return true }
-            throw ADBError.installFailed(retryOutput)
+            throw ADBError.signatureMismatch(packageName: pkg)
         }
 
         throw ADBError.installFailed(combinedOutput)
+    }
+
+    // MARK: - Reinstall With Save Backup
+
+    /// Handles a signature-mismatch reinstall with user consent already obtained.
+    /// Flow:
+    ///   1. Probe readability of save data on device
+    ///   2. Pull /sdcard/Android/data/<pkg> to a temp dir (saves only, NOT obb)
+    ///   3. pm uninstall <pkg>
+    ///   4. adb install <apk> with original flags
+    ///   5. Push backed-up saves back to device
+    ///   6. Clean up temp dir
+    func reinstallWithSaveBackup(
+        serial: String,
+        apkPath: URL,
+        packageName: String,
+        flags: [String] = ["-r", "-g"],
+        onStatus: @escaping @Sendable (String) -> Void,
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> Bool {
+        // For WiFi devices, ensure connection is fresh
+        if serial.contains(":") {
+            _ = await adbSilent("connect", serial)
+        }
+
+        // 1. Probe how many save files are readable on the device
+        onStatus("Checking save data…")
+        let probeOutput = await shellSilent(
+            serial,
+            "find \"/sdcard/Android/data/\(packageName)\" -type f -readable 2>/dev/null | wc -l"
+        )
+        let readableCount = Int(probeOutput.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+        let hasSaves = readableCount > 0
+
+        // 2. Pull save data to a temp directory
+        let backupDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("QuestSyndicate_saves_\(packageName)_\(Int(Date().timeIntervalSince1970))")
+        let backupDataDir = backupDir.appendingPathComponent("data")
+
+        defer {
+            // Always clean up the temp dir, even on error
+            try? FileManager.default.removeItem(at: backupDir)
+        }
+
+        if hasSaves {
+            onStatus("Backing up save data…")
+            onProgress?(10)
+            try? FileManager.default.createDirectory(at: backupDataDir, withIntermediateDirectories: true)
+            _ = try? await runner.run(adbPath, arguments: [
+                "-s", serial, "pull",
+                "/sdcard/Android/data/\(packageName)",
+                backupDataDir.path
+            ])
+        }
+
+        // 3. Uninstall old APK (keeps sdcard data intact on device — we have our own backup)
+        onStatus("Uninstalling old version…")
+        onProgress?(30)
+        _ = try? await shell(serial, "pm uninstall \(packageName)")
+
+        // 4. Install new APK
+        onStatus("Installing new version…")
+        onProgress?(40)
+
+        let args = ["-s", serial, "install"] + flags + [apkPath.path]
+        let handle = runner.runStreaming(adbPath, arguments: args) { line in
+            if let onProgress {
+                let pattern = #"\[(\d{1,3})%\]"#
+                if let range = line.range(of: pattern, options: .regularExpression) {
+                    let token = String(line[range])
+                    let digits = token.filter { $0.isNumber }
+                    if let pct = Double(digits) {
+                        // Map adb's 0–100% to our 40–80% band
+                        onProgress(40.0 + min(pct, 100) * 0.4)
+                    }
+                }
+            }
+        }
+
+        let installOutput: String
+        do {
+            let result = try await handle.waitForCompletion()
+            installOutput = (result.stdout + result.stderr).trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            if let pe = error as? ProcessError,
+               case ProcessError.processTerminated(_, let stderr) = pe {
+                installOutput = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+            } else {
+                installOutput = error.localizedDescription
+            }
+        }
+
+        guard installOutput.contains("Success") else {
+            throw ADBError.installFailed(installOutput)
+        }
+
+        onProgress?(80)
+
+        // 5. Restore backed-up save data
+        if hasSaves {
+            onStatus("Restoring save data…")
+            // adb pull creates a sub-folder named after the package inside our backupDataDir
+            let pulledDir = backupDataDir.appendingPathComponent(packageName)
+            let srcPath = FileManager.default.fileExists(atPath: pulledDir.path)
+                ? pulledDir.path : backupDataDir.path
+            _ = try? await runner.run(adbPath, arguments: [
+                "-s", serial, "push",
+                srcPath,
+                "/sdcard/Android/data/\(packageName)"
+            ])
+        }
+
+        onProgress?(100)
+        onStatus("Done")
+        return true
     }
 
     // MARK: - Uninstall

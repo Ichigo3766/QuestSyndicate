@@ -65,6 +65,27 @@ actor InstallationService {
         return try await adb.install(serial: deviceSerial, apkPath: apkPath, flags: ["-r", "-g"])
     }
 
+    // MARK: - Reinstall With Save Backup (signature mismatch flow)
+
+    /// Called after the user confirms they want to reinstall a game that has a signing key
+    /// mismatch. Backs up save data, uninstalls, reinstalls, then restores saves.
+    func reinstallWithSaveBackup(
+        apkPath: URL,
+        packageName: String,
+        deviceSerial: String,
+        onStatus: @escaping @Sendable (String) -> Void,
+        onProgress: (@Sendable (Double) -> Void)? = nil
+    ) async throws -> Bool {
+        return try await adb.reinstallWithSaveBackup(
+            serial: deviceSerial,
+            apkPath: apkPath,
+            packageName: packageName,
+            flags: ["-r", "-g"],
+            onStatus: onStatus,
+            onProgress: onProgress
+        )
+    }
+
     // MARK: - Copy OBB folder
 
     func copyOBBFolder(folderPath: URL, packageName: String, deviceSerial: String) async throws -> Bool {

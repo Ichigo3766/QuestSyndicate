@@ -79,10 +79,11 @@ final class DownloadPipeline {
     // MARK: - Queue Operations
 
     func addToQueue(_ game: GameInfo) {
-        // Don't add if already present (unless error/cancelled/completed/installError)
+        // Don't add if already present (unless error/cancelled/completed/installError/signatureMismatch)
         if let existing = queue.first(where: { $0.releaseName == game.releaseName }) {
             if existing.status == .error || existing.status == .cancelled
-                || existing.status == .completed || existing.status == .installError {
+                || existing.status == .completed || existing.status == .installError
+                || existing.status == .signatureMismatch {
                 // Do NOT delete files here — runPipeline will check if extracted files exist
                 // and skip the download+extract steps if they do.
                 queue.removeAll { $0.releaseName == game.releaseName }
@@ -208,6 +209,27 @@ final class DownloadPipeline {
             })
             persistQueue()
             onInstallComplete?()
+        } catch let adbError as ADBError {
+            if case .signatureMismatch = adbError {
+                // Find the first APK in the extracted dir for the reinstall path
+                let apkPath = Self.findFirstAPK(in: extractedDir)
+                updateItem(releaseName: releaseName, updates: {
+                    $0.status = .signatureMismatch
+                    $0.installStatus = nil
+                    $0.installProgress = nil
+                    $0.error = "This game was signed with a different key. Reinstall required to update."
+                    $0.pendingApkPath = apkPath?.path
+                })
+                persistQueue()
+            } else {
+                updateItem(releaseName: releaseName, updates: {
+                    $0.status = .installError
+                    $0.error = adbError.localizedDescription
+                    $0.installStatus = nil
+                    $0.installProgress = nil
+                })
+                persistQueue()
+            }
         } catch {
             updateItem(releaseName: releaseName, updates: {
                 $0.status = .installError
@@ -265,11 +287,13 @@ final class DownloadPipeline {
             do {
                 try await downloadStep(item: item, config: config, stagingDir: stagingDir)
             } catch {
-                if error.localizedDescription.lowercased().contains("cancel") {
+                let desc = error.localizedDescription.lowercased()
+                if desc.contains("cancel") {
                     return
                 }
+                let userMessage = Self.friendlyDownloadError(error)
                 updateItem(releaseName: item.releaseName, updates: {
-                    $0.status = .error; $0.error = error.localizedDescription
+                    $0.status = .error; $0.error = userMessage
                 })
                 return
             }
@@ -333,6 +357,25 @@ final class DownloadPipeline {
                 // Delete the extracted game folder + staging dir after a successful install
                 if autoDelete {
                     deleteFiles(releaseName: item.releaseName)
+                }
+            } catch let adbError as ADBError {
+                if case .signatureMismatch = adbError {
+                    // Pause the pipeline and surface to the user for confirmation
+                    let apkPath = Self.findFirstAPK(in: extractDir)
+                    updateItem(releaseName: item.releaseName, updates: {
+                        $0.status = .signatureMismatch
+                        $0.installStatus = nil
+                        $0.installProgress = nil
+                        $0.error = "This game was signed with a different key. Reinstall required to update."
+                        $0.pendingApkPath = apkPath?.path
+                    })
+                } else {
+                    updateItem(releaseName: item.releaseName, updates: {
+                        $0.status = .installError
+                        $0.error = adbError.localizedDescription
+                        $0.installStatus = nil
+                        $0.installProgress = nil
+                    })
                 }
             } catch {
                 updateItem(releaseName: item.releaseName, updates: {
@@ -500,5 +543,123 @@ final class DownloadPipeline {
             return single
         }
         return nil
+    }
+
+    // MARK: - Confirm Reinstall (signature mismatch flow)
+
+    /// Called after the user confirms the signature-mismatch reinstall dialog.
+    /// Picks up the pending APK path stored on the item and runs reinstallWithSaveBackup().
+    func confirmReinstall(releaseName: String, deviceSerial: String) async {
+        guard let item = queue.first(where: { $0.releaseName == releaseName }),
+              item.status == .signatureMismatch else { return }
+
+        guard let apkPathStr = item.pendingApkPath else {
+            // No APK path stored — fall back to install-from-completed so user can try again
+            updateItem(releaseName: releaseName, updates: {
+                $0.status = .installError
+                $0.error = "Could not find APK to reinstall. Please retry."
+                $0.pendingApkPath = nil
+            })
+            persistQueue()
+            return
+        }
+
+        let apkPath = URL(fileURLWithPath: apkPathStr)
+        let packageName = item.packageName
+
+        updateItem(releaseName: releaseName, updates: {
+            $0.status = .installing
+            $0.installStatus = "Preparing reinstall…"
+            $0.installProgress = 0
+            $0.error = nil
+            $0.pendingApkPath = nil
+        })
+
+        do {
+            _ = try await installation.reinstallWithSaveBackup(
+                apkPath: apkPath,
+                packageName: packageName,
+                deviceSerial: deviceSerial,
+                onStatus: { [weak self] statusMsg in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard let idx = self.queue.firstIndex(where: { $0.releaseName == releaseName }),
+                              self.queue[idx].status == .installing else { return }
+                        self.queue[idx].installStatus = statusMsg
+                    }
+                },
+                onProgress: { [weak self] pct in
+                    guard let self else { return }
+                    Task { @MainActor in
+                        guard let idx = self.queue.firstIndex(where: { $0.releaseName == releaseName }),
+                              self.queue[idx].status == .installing else { return }
+                        self.queue[idx].installProgress = pct
+                    }
+                }
+            )
+            updateItem(releaseName: releaseName, updates: {
+                $0.status = .completed
+                $0.installStatus = nil
+                $0.installProgress = nil
+                $0.isInstalledToDevice = true
+            })
+            persistQueue()
+            onInstallComplete?()
+        } catch {
+            updateItem(releaseName: releaseName, updates: {
+                $0.status = .installError
+                $0.error = error.localizedDescription
+                $0.installStatus = nil
+                $0.installProgress = nil
+            })
+            persistQueue()
+        }
+    }
+
+    /// Returns the first .apk file found (recursively) in a directory, sorted by name.
+    static func findFirstAPK(in directory: URL) -> URL? {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
+        guard let enumerator = FileManager.default.enumerator(
+            at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        var apks: [URL] = []
+        for case let url as URL in enumerator {
+            if url.pathExtension.lowercased() == "apk" { apks.append(url) }
+        }
+        return apks.sorted { $0.lastPathComponent < $1.lastPathComponent }.first
+    }
+
+    /// Converts a raw rclone/process download error into a user-friendly message.
+    ///
+    /// rclone exit code 3 means the remote directory was not found — this happens when
+    /// a game is listed in GameList.txt but its files haven't been uploaded to the VRP
+    /// server yet (or were removed). Surface a clear, actionable message instead of the
+    /// raw "Process exited 3: … error listing "": directory not found" string.
+    static func friendlyDownloadError(_ error: Error) -> String {
+        let raw   = error.localizedDescription
+        let lower = raw.lowercased()
+
+        // rclone exit 3 — remote directory does not exist on the server
+        if lower.contains("directory not found") || lower.contains("error listing") {
+            return "Game files not found on this server. This version may not have been uploaded yet — try switching mirrors in Settings or try again later."
+        }
+
+        // Network / connectivity issues
+        if lower.contains("timeout") || lower.contains("timed out") {
+            return "Download timed out. Check your internet connection and try again."
+        }
+        if lower.contains("connection refused") || lower.contains("no route to host")
+            || lower.contains("network is unreachable") {
+            return "Could not reach the server. Check your internet connection or try a different mirror."
+        }
+
+        // Generic rclone non-zero exit (some other server-side error)
+        if lower.contains("process exited") {
+            return "Download failed — the server returned an error. Try switching mirrors in Settings."
+        }
+
+        return raw
     }
 }
