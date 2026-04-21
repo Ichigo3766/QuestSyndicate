@@ -117,14 +117,26 @@ jobs:
           echo "dmg_path=$DMG_PATH"  >> $GITHUB_ENV
           echo "dmg_name=$DMG_NAME"  >> $GITHUB_ENV
 
-      # ── 9. Create GitHub Release & upload DMG ────────────────────────────────
+      # ── 9. Extract release notes from commit message body ────────────────────
+      - name: Extract release notes
+        id: notes
+        run: |
+          # The release commit message body contains our human-written changelog.
+          # git log -1 --format=%B prints the full commit message of the tag commit.
+          NOTES=$(git log -1 --format=%B "${{ steps.version.outputs.tag }}" | tail -n +2)
+          # Write to a file to safely handle multi-line content
+          echo "$NOTES" > /tmp/release_notes.md
+          echo "notes_file=/tmp/release_notes.md" >> $GITHUB_OUTPUT
+
+      # ── 10. Create GitHub Release & upload DMG ───────────────────────────────
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           name: "QuestSyndicate ${{ steps.version.outputs.tag }}"
+          body_path: ${{ steps.notes.outputs.notes_file }}
           draft: false
           prerelease: false
-          generate_release_notes: true    # auto-generates changelog from commits
+          generate_release_notes: false
           files: ${{ env.dmg_path }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

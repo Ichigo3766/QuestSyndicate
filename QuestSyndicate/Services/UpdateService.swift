@@ -230,15 +230,6 @@ final class UpdateService {
             "-nobrowse", "-quiet"
         ])
 
-        defer {
-            // Always try to unmount, even on failure
-            Task.detached(priority: .utility) {
-                try? await self.run("/usr/bin/hdiutil", args: [
-                    "detach", tempMount.path, "-force", "-quiet"
-                ])
-            }
-        }
-
         // 2. Find the .app inside the mounted volume
         let contents = try FileManager.default.contentsOfDirectory(
             at: tempMount,
@@ -322,7 +313,10 @@ final class UpdateService {
     // MARK: - Relaunch
 
     private func relaunch() {
-        NSApp.terminate(nil)
+        // Use exit(0) instead of NSApp.terminate(nil) to bypass sheet/window
+        // close callbacks that can block the process from actually quitting,
+        // which would leave the update script stuck waiting forever.
+        exit(0)
     }
 
     // MARK: - Shell Helper

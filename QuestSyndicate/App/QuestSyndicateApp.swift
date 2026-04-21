@@ -19,7 +19,8 @@ struct QuestSyndicateApp: App {
                 .task {
                     // Delay slightly so the window is fully rendered before network activity
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
-                    await appState.updater.checkIfNeeded()
+                    // Always force-check on launch so the prompt appears every time an update exists
+                    await appState.updater.checkForUpdate()
                 }
                 // ── Update check: on foreground resume ────────────────────────
                 .onReceive(
