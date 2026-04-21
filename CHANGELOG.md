@@ -1,12 +1,14 @@
 # Changelog
 
-## 📦 NEXT BUILD
+## v1.2 — April 21, 2026
 
 ### What's New
 
 ### Improvements
+- Settings panel now dismisses by clicking outside it or pressing Escape.
 
 ### Bug Fixes
+- Fixed update prompt not appearing automatically on fresh launch when a new version is available.
 
 
 ## Previous Builds

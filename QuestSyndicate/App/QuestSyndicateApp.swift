@@ -21,6 +21,10 @@ struct QuestSyndicateApp: App {
                     try? await Task.sleep(nanoseconds: 2_000_000_000)
                     // Always force-check on launch so the prompt appears every time an update exists
                     await appState.updater.checkForUpdate()
+                    // Directly set the flag — .onChange on @Observable can miss the first transition
+                    if appState.updater.availableUpdate != nil {
+                        showUpdateSheet = true
+                    }
                 }
                 // ── Update check: on foreground resume ────────────────────────
                 .onReceive(
@@ -28,9 +32,14 @@ struct QuestSyndicateApp: App {
                         for: NSApplication.didBecomeActiveNotification
                     )
                 ) { _ in
-                    Task { await appState.updater.checkIfNeeded() }
+                    Task {
+                        await appState.updater.checkIfNeeded()
+                        if appState.updater.availableUpdate != nil {
+                            showUpdateSheet = true
+                        }
+                    }
                 }
-                // ── Show update sheet when an update is detected ──────────────
+                // ── Show update sheet when triggered by other code paths ───────
                 .onChange(of: appState.updater.availableUpdate != nil) { _, hasUpdate in
                     if hasUpdate { showUpdateSheet = true }
                 }

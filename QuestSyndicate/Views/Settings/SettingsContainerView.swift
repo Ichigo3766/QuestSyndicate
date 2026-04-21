@@ -35,7 +35,7 @@ struct SettingsContainerView: View {
     var body: some View {
         VStack(spacing: 0) {
             // ── Custom tab bar ────────────────────────────────────────────────
-            HStack(spacing: 4) {
+            HStack(alignment: .bottom, spacing: 4) {
                 ForEach(SettingsTab.allCases, id: \.self) { tab in
                     Button {
                         withAnimation(.easeInOut(duration: 0.18)) {

@@ -42,10 +42,6 @@ struct SidebarView: View {
                 .help("Settings")
             }
         }
-        .sheet(isPresented: Bindable(appState).showSettings) {
-            SettingsContainerView()
-                .environment(appState)
-        }
     }
 
     // MARK: - App Header

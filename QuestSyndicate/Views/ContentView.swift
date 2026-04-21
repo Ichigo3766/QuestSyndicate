@@ -16,6 +16,41 @@ struct ContentView: View {
             detailView
         }
         .navigationSplitViewStyle(.prominentDetail)
+        // ── Settings overlay (click outside or Escape to dismiss) ────────────
+        .overlay {
+            if appState.showSettings {
+                // Full-size scrim layer
+                Color.black.opacity(0.35)
+                    .ignoresSafeArea()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            appState.showSettings = false
+                        }
+                    }
+                    .overlay {
+                        // Centered card — sits on top of the scrim
+                        SettingsContainerView()
+                            .environment(appState)
+                            .background(Color(NSColor.windowBackgroundColor))
+                            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                            .shadow(color: .black.opacity(0.3), radius: 32, x: 0, y: 8)
+                            .allowsHitTesting(true)
+                            // Escape key support
+                            .background {
+                                Button("") {
+                                    withAnimation(.easeInOut(duration: 0.18)) {
+                                        appState.showSettings = false
+                                    }
+                                }
+                                .keyboardShortcut(.escape, modifiers: [])
+                                .hidden()
+                            }
+                    }
+                    .transition(.opacity.combined(with: .scale(scale: 0.97, anchor: .center)))
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: appState.showSettings)
         .alert("Error", isPresented: $appState.showAlert, presenting: appState.alertMessage) { _ in
             Button("OK") {}
         } message: { msg in
