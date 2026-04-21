@@ -2,11 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Unlock ProMotion / 120 Hz rendering.
-	     Without this key Core Animation clamps the display link to 60 fps
-	     regardless of the display's native refresh rate. Setting it to YES
-	     lets the system drive the app at the display's maximum rate (up to
-	     120 Hz on ProMotion MacBook Pros / iPad Pros). -->
 	<key>CADisableMinimumFrameDuration</key>
 	<true/>
 </dict>
